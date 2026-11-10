@@ -1,0 +1,19 @@
+import {newGroup,transition} from './ledger.js';
+const KEY='tripsplit-demo-v1';
+export const demoPeople=[{uid:'rahul',name:'Rahul'},{uid:'priya',name:'Priya'},{uid:'amit',name:'Amit'},{uid:'neha',name:'Neha'}];
+export function seed(){const now=Date.now();let g=newGroup({name:'Goa Madness',destination:'Goa, India',start:'2026-11-20',end:'2026-11-24',currency:'INR',emoji:'🏖️'},demoPeople[0],'goa','DEMO-GOA',now);for(const p of demoPeople.slice(1)){g.memberIds.push(p.uid);g.members[p.uid]={name:p.name,active:true};g.balances[p.uid]=0;g.contributions[p.uid]=0;g.pending[p.uid]=0;}const expenses={},activity=[];[['Pizza Night',1800,'Food','rahul'],['Hotel',8000,'Hotel','priya'],['Taxi',1200,'Transport','amit'],['Drinks',2000,'Food','neha'],['Beach Party',3000,'Activities','rahul']].forEach(([title,amount,category,payer],i)=>{const at=now-(5-i)*3600000;const r=transition(g,'saveExpense',{title,amount:String(amount),category,payers:{[payer]:String(amount)},participants:g.memberIds,mode:'equal',values:{},date:'2026-11-20',notes:''},demoPeople.find(p=>p.uid===payer),null,at);g=r.group;expenses['e'+i]={id:'e'+i,...r.record};activity.push({id:'a'+i,actor:g.members[payer].name,label:r.label,createdAt:at});});return {groups:{goa:g},expenses:{goa:expenses},settlements:{goa:{}},activity:{goa:activity},operations:{}};}
+export class DemoStore{
+ constructor(onChange){this.onChange=onChange;try{this.data=JSON.parse(localStorage.getItem(KEY))||seed();}catch{this.data=seed();}this.listener=e=>{if(e.key===KEY){try{this.data=JSON.parse(e.newValue)||seed();this.onChange();}catch{}}};window.addEventListener('storage',this.listener);}
+ dispose(){window.removeEventListener('storage',this.listener);}
+ save(){localStorage.setItem(KEY,JSON.stringify(this.data));this.onChange();}
+ reset(){this.data=seed();this.save();}
+ groups(uid){return Object.values(this.data.groups).filter(g=>g.memberIds.includes(uid)).sort((a,b)=>b.updatedAt-a.updatedAt);}
+ records(gid,type){return Object.values(this.data[type][gid]||{}).sort((a,b)=>b.createdAt-a.createdAt);}
+ async action(action,input,actor,gid,opId){if(this.data.operations[opId])return this.data.operations[opId];let result;
+ if(action==='previewInvite'||action==='join'){const g=Object.values(this.data.groups).find(g=>g.inviteCode===input.code.trim().toUpperCase());if(!g)throw new Error('Code not found in this browser demo. Try DEMO-GOA.');if(action==='previewInvite')return {id:g.id,name:g.name,emoji:g.emoji,count:g.memberIds.length};if(!g.memberIds.includes(actor.uid)){g.memberIds.push(actor.uid);g.members[actor.uid]={name:actor.name,active:true};g.balances[actor.uid]??=0;g.contributions[actor.uid]??=0;g.pending[actor.uid]??=0;}result={id:g.id};}
+ else if(action==='createTrip'){const id=crypto.randomUUID();const code=crypto.randomUUID().replaceAll('-','').slice(0,16).toUpperCase();const g=newGroup(input,actor,id,code,Date.now());this.data.groups[id]=g;this.data.expenses[id]={};this.data.settlements[id]={};this.data.activity[id]=[{id:crypto.randomUUID(),actor:actor.name,label:'created the trip 🧳',createdAt:Date.now()}];result={id,code};}
+ else if(action==='rotateInvite'){const g=this.data.groups[gid];if(g.adminId!==actor.uid)throw new Error('Only the admin can renew invitations.');g.inviteCode=crypto.randomUUID().replaceAll('-','').slice(0,16).toUpperCase();result={code:g.inviteCode};}
+ else{const type=action.includes('Expense')?'expenses':'settlements';const id=input.id||opId;const old=this.data[type][gid]?.[id]||null;const next=transition(this.data.groups[gid],action,input,actor,old);this.data.groups[gid]=next.group;if(action==='deleteExpense')delete this.data.expenses[gid][id];else if(next.record)this.data[type][gid][id]={id,...next.record};this.data.activity[gid].push({id:opId,actor:actor.name,label:next.label,createdAt:Date.now()});result={id};}
+ this.data.operations[opId]=result;this.save();return result;
+ }
+}

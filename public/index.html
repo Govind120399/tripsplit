@@ -1,0 +1,37 @@
+<!doctype html>
+<html lang="en">
+
+<head>
+    <meta charset="utf-8">
+    <meta name="viewport" content="width=device-width,initial-scale=1,viewport-fit=cover">
+    <meta name="theme-color" content="#6558F5">
+    <meta name="apple-mobile-web-app-capable" content="yes">
+    <meta name="apple-mobile-web-app-title" content="TripSplit">
+    <meta name="description" content="Less settling up. More making memories. Split trip expenses with your friends.">
+    <link rel="manifest" href="/manifest.webmanifest">
+    <link rel="icon" href="/assets/icons/icon-192.png">
+    <link rel="apple-touch-icon" href="/assets/icons/icon-192.png">
+    <link rel="stylesheet" href="/css/app.css">
+    <title>TripSplit — Good trips. Fair splits.</title>
+</head>
+
+<body>
+    <div id="app">
+        <div class="boot">
+            <div class="brand-mark">↗</div>
+            <h1>TripSplit</h1>
+            <p>Counting the pennies…</p>
+            <div class="skeleton"></div>
+        </div>
+    </div>
+    <dialog id="sheet" aria-labelledby="sheet-title">
+        <div class="sheet-head"><span class="handle"></span>
+            <h2 id="sheet-title"></h2><button id="close-sheet" class="icon-button" aria-label="Close dialog">×</button>
+        </div>
+        <div id="sheet-body"></div>
+    </dialog>
+    <div id="toast" role="status" aria-live="polite"></div>
+    <script type="module" src="/js/app.js"></script>
+</body>
+
+</html>

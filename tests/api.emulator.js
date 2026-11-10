@@ -1,0 +1,29 @@
+// Exercises the actual API handler against isolated Auth and Firestore emulators.
+import test from 'node:test';
+import assert from 'node:assert/strict';
+import {initializeApp} from 'firebase-admin/app';
+import {getFirestore} from 'firebase-admin/firestore';
+import {getAuth} from 'firebase-admin/auth';
+assert(process.env.FIRESTORE_EMULATOR_HOST&&process.env.FIREBASE_AUTH_EMULATOR_HOST,'Run with npm run test:api, never against production.');
+initializeApp({projectId:'demo-tripsplit'});
+const {default:handler}=await import('../api/action.js');
+const db=getFirestore(),auth=getAuth();
+async function account(name){const r=await fetch(`http://${process.env.FIREBASE_AUTH_EMULATOR_HOST}/identitytoolkit.googleapis.com/v1/accounts:signUp?key=fake`,{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({email:name+'@example.com',password:'Demo-only-123!',returnSecureToken:true})});const u=await r.json();await auth.updateUser(u.localId,{displayName:name});return {uid:u.localId,token:u.idToken};}
+const alice=await account('Alice'),bob=await account('Bob'),eve=await account('Eve');
+async function call(user,action,input={},groupId,operationId=crypto.randomUUID()){let status=200,result;await handler({method:'POST',headers:{authorization:'Bearer '+user.token},body:{action,input,groupId,operationId}},{setHeader(){},status(s){status=s;return this;},json(v){result=v;return this;}});return {status,...result};}
+let groupId,code,expenseId,paymentId;
+const trip={name:'API test trip',destination:'Goa',start:'2026-11-10',end:'2026-11-12',currency:'INR'};
+test('create group, membership, expiring invitation and idempotent retry',async()=>{const op=crypto.randomUUID();const r=await call(alice,'createTrip',trip,null,op);assert.equal(r.status,200,JSON.stringify(r));groupId=r.id;code=r.code;const retry=await call(alice,'createTrip',trip,null,op);assert.equal(retry.id,groupId);const g=(await db.doc('groups/'+groupId).get()).data();assert.equal(g.adminId,alice.uid);assert.deepEqual(g.memberIds,[alice.uid]);});
+test('invalid invitation fails; preview leaks only trip preview',async()=>{assert.equal((await call(bob,'previewInvite',{code:'BAD'})).status,400);const r=await call(bob,'previewInvite',{code});assert.equal(r.name,trip.name);assert.equal(r.members,undefined);assert.equal(r.balances,undefined);});
+test('duplicate joins do not duplicate memberships',async()=>{assert.equal((await call(bob,'join',{code})).status,200);assert.equal((await call(bob,'join',{code})).status,200);assert.equal((await db.doc('groups/'+groupId).get()).data().memberIds.length,2);});
+const input=()=>({title:'Dinner',amount:'100',date:'2026-11-10',category:'Food',participants:[alice.uid,bob.uid],payers:{[alice.uid]:'100'},mode:'equal',values:{}});
+test('outsider is denied API mutation',async()=>assert.equal((await call(eve,'saveExpense',input(),groupId)).status,400));
+test('expense transaction and idempotency update aggregate once',async()=>{const op=crypto.randomUUID();const r=await call(alice,'saveExpense',input(),groupId,op);assert.equal(r.status,200,JSON.stringify(r));expenseId=r.id;const retry=await call(alice,'saveExpense',input(),groupId,op);assert.equal(retry.id,r.id);const g=(await db.doc('groups/'+groupId).get()).data();assert.equal(g.total,10000);assert.equal(g.balances[alice.uid],5000);assert.equal(g.foodPayers[alice.uid],10000);assert.equal(g.highest.amount,10000);});
+test('concurrent edits: exactly one revision wins',async()=>{const a={...input(),id:expenseId,version:1,title:'Edited dinner'};const results=await Promise.all([call(alice,'saveExpense',a,groupId),call(alice,'saveExpense',a,groupId)]);assert.deepEqual(results.map(r=>r.status).sort(),[200,400]);assert.equal((await db.doc(`groups/${groupId}/expenses/${expenseId}`).get()).data().version,2);});
+test('pending payment leaves financial balance untouched',async()=>{const r=await call(bob,'recordSettlement',{to:alice.uid,amount:'10',method:'UPI'},groupId);assert.equal(r.status,200,JSON.stringify(r));paymentId=r.id;const g=(await db.doc('groups/'+groupId).get()).data();assert.equal(g.balances[alice.uid],5000);assert.equal(g.pending[bob.uid],1);});
+test('sender cannot confirm; recipient can confirm once',async()=>{assert.equal((await call(bob,'confirmSettlement',{id:paymentId},groupId)).status,400);assert.equal((await call(alice,'confirmSettlement',{id:paymentId},groupId)).status,200);assert.equal((await call(alice,'confirmSettlement',{id:paymentId},groupId)).status,400);const g=(await db.doc('groups/'+groupId).get()).data();assert.equal(g.balances[alice.uid],4000);assert.equal(g.balances[bob.uid],-4000);});
+test('existing payment cannot be overwritten via record endpoint',async()=>{assert.equal((await call(bob,'recordSettlement',{id:paymentId,to:alice.uid,amount:'10',method:'UPI'},groupId)).status,400);assert.equal((await db.doc(`groups/${groupId}/settlements/${paymentId}`).get()).data().status,'confirmed');});
+test('members cannot renew invitation; admin rotation invalidates old code',async()=>{assert.equal((await call(bob,'rotateInvite',{},groupId)).status,400);assert.equal((await call(alice,'rotateInvite',{},groupId)).status,200);assert.equal((await call(eve,'join',{code})).status,400);});
+test('delete adjusts expense aggregates but preserves confirmed payments',async()=>{assert.equal((await call(alice,'deleteExpense',{id:expenseId,version:2},groupId)).status,200);const g=(await db.doc('groups/'+groupId).get()).data();assert.equal(g.total,0);assert.equal(g.count,0);assert.equal(g.highest,null);assert.equal(g.foodPayers[alice.uid],0);assert.equal(g.balances[alice.uid],-1000);assert.equal(g.balances[bob.uid],1000);});
+test('unauthenticated requests are rejected',async()=>assert.equal((await call({token:'invalid'},'createTrip',trip)).status,401));
+test.after(async()=>await db.terminate());
